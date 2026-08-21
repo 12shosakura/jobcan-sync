@@ -1,222 +1,336 @@
-# Jobcan → Google Calendar Sync
+# Jobcan → Google カレンダー同期
 
-Signs in to Jobcan over plain HTTP, scrapes your shift page HTML, and mirrors the
-shifts into a Google Calendar every 30 minutes. Runs entirely on your own machine.
+Jobcan にログインしてシフト表の HTML を読み取り、30 分ごとに Google カレンダーへ反映します。
+すべて自分のパソコンの中だけで動きます。
 
-### The login flow
+**同期は一方向だけです。** Jobcan 側には何も書き込みません。
 
-No headless browser is involved — Jobcan's sign-in is an ordinary Rails form, so a
-cookie jar over `fetch` is enough:
+**既存のカレンダーには触れません。** このアプリが要求する OAuth スコープは
+[`calendar.app.created`](https://developers.google.com/calendar/api/auth) の 1 つだけです
+（「メイン以外の Google カレンダーの作成、そのカレンダー上の予定の参照、作成、変更、削除」）。
+これは*このアプリ自身が作成した*カレンダーにしかアクセスできません。あなたの個人用や
+仕事用のカレンダーは、書き込みどころか読み取りもできません。この境界を守っているのは
+アプリ自身ではなく Google 側の仕組みです。
 
-1. `GET https://id.jobcan.jp/users/sign_in` — collect cookies and the
-   `authenticity_token`.
-2. `POST https://id.jobcan.jp/users/sign_in` with `user[email]`,
-   `user[password]` and `user[client_code]`, replaying the form's own hidden
-   fields.
-3. `GET https://ssl.jobcan.jp/jbcoauth/login` — bridges the Common-ID session
-   into an employee session on `ssl.jobcan.jp`. Skipping this step makes every
-   shift page bounce back to the login form.
-4. `GET` the shift page for each month and scrape the table.
+初回の同期時に専用のカレンダー（既定の名前は **Jobcan Shifts**）を 1 つ作成し、
+そこにだけ書き込みます。そのカレンダーの中でも、このアプリが付けた目印
+（`jobcanSync=1`）が付いた予定しか変更しません。あなたが手で追加した予定は消えません。
 
-**One-way by design.** Nothing is ever written back to Jobcan.
+### ログインの流れ
 
-**It cannot touch your existing calendars.** The app requests a single OAuth scope,
-[`calendar.app.created`](https://developers.google.com/calendar/api/auth) — *"Make
-secondary Google calendars, and see, create, change, and delete events on them."*
-That grants access only to calendars this app created itself. Your personal and
-work calendars are not readable, let alone writable, and Google enforces that
-boundary rather than the app policing itself.
+ヘッドレスブラウザは使いません。Jobcan のログインは通常の Rails のフォームなので、
+`fetch` に Cookie を保持する仕組みを足すだけで足ります。
 
-On the first sync the app creates one calendar of its own (default name **Jobcan
-Shifts**) and writes only there. Inside that calendar it still only touches events
-carrying its private `jobcanSync=1` tag, so anything you add there by hand
-survives.
+1. `GET https://id.jobcan.jp/users/sign_in`
+   … Cookie と `authenticity_token` を受け取ります。
+2. `POST https://id.jobcan.jp/users/sign_in`
+   … `user[email]`、`user[password]`、`user[client_code]` を、
+   フォームが元々持っている隠しフィールドと一緒に送ります。
+3. `GET https://ssl.jobcan.jp/jbcoauth/login`
+   … 共通 ID のセッションを `ssl.jobcan.jp` の従業員セッションへ引き継ぎます。
+   **この手順を飛ばすと、シフト画面は必ずログイン画面に戻されます。**
+4. シフト画面を取得して表を読み取ります。
 
-## Setup
+## 準備
 
 ```bash
 npm install
 ```
 
-The only runtime dependency is `cheerio` for HTML parsing.
+動作に必要な外部ライブラリは、HTML を解析する `cheerio` だけです。
 
-### Google OAuth credentials
+### Google API のセットアップ（`client_secret_….json` の取得手順）
 
-**Why you have to create these.** "Sign in with Google" buttons in other apps work
-without any setup because *that app's developer* registered an OAuth client and
-shipped its client ID inside the app. Google will not let anything touch the
-Calendar API without a client registered in some Cloud project, and this app has
-no developer-owned client to ship you — so the client has to be yours. Two
-consolations: for a Desktop client the "secret" is
-[explicitly not treated as confidential](https://developers.google.com/identity/protocols/oauth2)
-(it is an identifier, not a credential), and owning the client yourself means no
-shared secret, no dependence on anyone else's project, and you can revoke it at
-any time from your own console.
+**なぜ自分で作る必要があるのか。** 他のアプリの「Google でログイン」ボタンが設定なしで
+使えるのは、*そのアプリの開発者*が OAuth クライアントを登録済みで、そのクライアント ID を
+アプリに同梱しているからです。Google は、どこかの Cloud プロジェクトに登録された
+クライアントなしでは Calendar API へのアクセスを一切許可しません。このアプリには
+同梱できる開発者所有のクライアントがないため、クライアントはあなた自身のものになります。
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project
-   and enable the **Google Calendar API**.
-2. Configure the OAuth consent screen, user type **External**, and add yourself as
-   a user.
-3. **Set the publishing status to "In production".** See the warning below — this
-   one matters more than it looks.
-4. Create an **OAuth client ID** of type **Desktop app**, then **Download JSON**.
-   The consent screen will ask only for permission to make secondary calendars and
-   manage events on them — not for access to your existing calendars.
-5. Paste the whole `client_secret_….json` into the app and press
-   **Connect Google Calendar**.
+救いは 2 つあります。デスクトップ クライアントの「シークレット」は Google 自身が
+[機密として扱わないと明記](https://developers.google.com/identity/protocols/oauth2)
+しており（認証情報ではなく識別子です）、自分で所有すれば他人のプロジェクトに依存せず、
+いつでも自分のコンソールから取り消せます。
 
-Google will warn that the app is unverified. That is expected: verification is a
-review process for apps published to the public, and this one only ever talks to
-your own account. Click **Advanced → Go to … (unsafe)** to continue.
+所要時間は 5〜10 分です。
 
-> #### ⚠ Do not leave the consent screen in "Testing"
+#### 1. プロジェクトを作成する
+
+1. [Google Cloud Console](https://console.cloud.google.com/) を開きます。
+2. 画面上部のプロジェクト選択メニュー →「**新しいプロジェクト**」。
+3. プロジェクト名を入力（例: `jobcan-gcal-sync`）→「**作成**」。
+4. 作成後、上部のメニューでそのプロジェクトが選択されていることを確認します。
+   **以降の手順はすべて、このプロジェクトを選択した状態で行ってください。**
+
+#### 2. Google Calendar API を有効にする
+
+1. 左メニュー →「**API とサービス**」→「**ライブラリ**」。
+2. `Google Calendar API` を検索して選択。
+3. 「**有効にする**」をクリック。
+
+#### 3. OAuth（Google 認証プラットフォーム）を設定する
+
+左メニューの「**Google 認証プラットフォーム**」を開きます
+（以前は「API とサービス」→「OAuth 同意画面」。アカウントによっては旧画面のことがあります）。
+
+初回は「**開始**」から次を入力します。
+
+| 項目 | 入力内容 |
+| --- | --- |
+| アプリ名 | 任意（例: `Jobcan Sync`）。自分の同意画面に表示されるだけです |
+| ユーザーサポートメール | 自分のメールアドレス |
+| 対象（Audience） | **外部**（個人の Gmail アカウントの場合）|
+| 連絡先メールアドレス | 自分のメールアドレス |
+
+> Google Workspace アカウントなら「**内部**」を選べます。内部は後述の 7 日問題も
+> 「確認されていないアプリ」の警告も発生しないため、選べるならそちらが最適です。
+
+#### 4. スコープを追加する（データアクセス）
+
+1. 「**データアクセス**」ページを開きます。
+2. 「**スコープを追加または削除**」をクリック。
+3. フィルタに `calendar.app.created` と入力。
+4. `https://www.googleapis.com/auth/calendar.app.created` にチェックを入れます。
+   （説明: 「メイン以外の Google カレンダーの作成、そのカレンダー上の予定の参照、作成、変更、削除」）
+5. 「**更新**」→「**保存**」。
+
+> **他のカレンダー系スコープは追加しないでください。**
+> `calendar` や `calendar.events` を追加すると、**既存のすべてのカレンダー**への
+> 編集権限を要求することになります。このアプリが必要とするのは
+> `calendar.app.created` の 1 つだけで、これは*このアプリが自分で作成した*
+> カレンダーにしかアクセスできません。
+
+#### 5. 「対象」ページを設定する（重要）
+
+このページでは 2 つのことを行います。**どちらも忘れるとログインできません。**
+
+**(a) テストユーザーに自分のメールアドレスを追加する**
+
+公開ステータスが「テスト」の間は、**ここに登録したアカウントしかログインできません。**
+自分のメールアドレスを追加していないと、Google のログイン画面で
+「アクセスをブロック: ○○ は Google の審査プロセスを完了していません」と表示され、
+先へ進めなくなります。
+
+1. 「**対象**」ページの「**テストユーザー**」で「**+ Users**」をクリック。
+2. **同期先の Google カレンダーを持つアカウント**のメールアドレスを入力して「**保存**」。
+
+> Google Cloud Console にログインしているアカウントと、カレンダーを使うアカウントが
+> 違っていても構いません。その場合は**カレンダー側のアドレス**を登録してください。
+> ここを取り違えると、同意画面まで進んでもブロックされます。
+
+**(b) 公開ステータスを「本番環境」にする**
+
+公開ステータスが「**テスト**」なら「**アプリを公開**」をクリックして
+「**本番環境**」にします。
+
+本番環境にすると、テストユーザーの登録は不要になります
+（登録したまま残しておいても問題ありません）。
+
+> #### ⚠ 「テスト」のままにしないでください
 >
-> With an **External** consent screen in **Testing** status, Google expires
-> refresh tokens after **7 days** — for every scope except basic profile info.
-> A background sync would then die silently once a week and need reconnecting by
-> hand. Setting the publishing status to **In production** removes that expiry.
-> Unverified is fine; *Testing* is not.
->
-> If syncing does stop with `invalid_grant`, the app says so in the log and the
-> fix is to press **Connect Google Calendar** again — but check the publishing
-> status first, or it will just happen again next week.
->
-> (Google Workspace accounts can instead use user type **Internal**, which has no
-> such expiry and no unverified warning.)
+> 対象が「**外部**」かつ公開ステータスが「**テスト**」の場合、Google は
+> **リフレッシュトークンを 7 日で失効**させます（基本プロフィール以外の全スコープが対象）。
+> バックグラウンド同期は毎週静かに止まり、そのたびに手動で再接続が必要になります。
+> 「**本番環境**」にすればこの失効はなくなります。**未確認**のままで問題ありません。
+> 避けるべきは*テスト*状態です。
 
-## Running it
+「確認されていないアプリ」という警告は出ますが正常です。確認（verification）は
+一般公開するアプリ向けの審査で、このアプリはあなた自身のアカウントとしか通信しません。
+
+#### 6. OAuth クライアントを作成して JSON をダウンロードする
+
+1. 「**クライアント**」ページ →「**クライアントを作成**」。
+2. アプリケーションの種類: **デスクトップ アプリ**。
+3. 名前は任意（例: `jobcan-sync-desktop`）→「**作成**」。
+4. 作成後のダイアログ、または一覧の右端のダウンロードアイコンから
+   「**JSON をダウンロード**」。`client_secret_….json` が保存されます。
+
+デスクトップ アプリはループバック（`127.0.0.1`）へのリダイレクトが自動的に許可されるため、
+**リダイレクト URL の登録は不要**です。
+
+<details>
+<summary>「ウェブ アプリケーション」で作る場合（代替手段）</summary>
+
+1. アプリケーションの種類: **ウェブ アプリケーション**。
+2. 「**承認済みのリダイレクト URI**」に次を追加します。
+
+   ```
+   http://127.0.0.1:5675/oauth2callback
+   ```
+
+3. 「承認済みの JavaScript 生成元」は不要です。
+4. `JOBCAN_SYNC_PORT` でポートを変更している場合は、URI のポート番号も合わせてください。
+   アプリ画面の「クライアント ID と secret を手動で入力」を開くと、
+   登録すべき正確な URI が表示されます。
+
+URI が 1 文字でも違うと `redirect_uri_mismatch` で失敗します。
+</details>
+
+#### 7. アプリに貼り付けて接続する
+
+1. アプリを起動して <http://127.0.0.1:5675> を開きます。
+2. 「**2 · Google Calendar**」の `client_secret_….json` 欄に、
+   ダウンロードしたファイルの中身を**まるごと**貼り付けます。
+   （Client ID と secret は自動で読み取られます）
+3. 「**Connect Google Calendar**」をクリック。
+4. Google の画面で「**詳細**」→「**（安全ではないページ）に移動**」。
+5. 求められる権限が「**メイン以外の Google カレンダーの作成…**」だけであることを確認して許可。
+6. アプリの画面が「**✓ Connected**」になれば完了です。
+
+#### うまくいかないときは
+
+| 症状 | 原因と対処 |
+| --- | --- |
+| `invalid_grant` | トークンが失効。「Connect Google Calendar」で再接続。**毎週**起きるなら公開ステータスが「テスト」のままです（手順 5）|
+| `アクセスをブロック: このアプリのリクエストは無効です` | リダイレクト URI の不一致。ウェブ アプリケーションで作った場合は URI を確認（手順 6 の代替手段）|
+| 同意画面に「カレンダーの表示・編集」と表示される | 余分なスコープが入っています。データアクセスから `calendar` / `calendar.events` を削除（手順 4）|
+| `アクセスをブロック: …は Google の審査プロセスを完了していません` | 公開ステータスが「テスト」で、そのアカウントがテストユーザーに登録されていません。「対象」ページで自分のメールアドレスを追加するか、「本番環境」に切り替えます（手順 5）|
+| ログインするアカウントを選ぶ画面で先に進めない | テストユーザーに登録したアドレスと、実際にログインしたアカウントが違います。カレンダーを使う側のアドレスを登録してください（手順 5-a）|
+
+## 起動する
 
 ```bash
 npm start
 ```
 
-Then open <http://127.0.0.1:5675>, fill in the three sections, and press
-**Start Syncing**.
+<http://127.0.0.1:5675> を開き、3 つの区画を入力して「**Start Syncing**」を押します。
 
-### Run it in the background at login
+### ログイン時に自動で起動する（常駐させる）
 
 ```bash
 npm run install-service
 ```
 
-This registers a macOS LaunchAgent (`com.jobcan.gcal-sync`) that starts the app at
-login and restarts it if it crashes. The UI stays at
-<http://127.0.0.1:5675>. Remove it with `npm run uninstall-service`.
+macOS の LaunchAgent（`com.jobcan.gcal-sync`）として登録します。
+パソコンにログインすると自動的に起動し、異常終了しても再び起動します。
+画面はこれまでと同じ <http://127.0.0.1:5675> です。
+解除するときは `npm run uninstall-service` を実行します。
 
 ```bash
-launchctl list | grep jobcan     # check it is loaded
-tail -f ~/.jobcan-gcal-sync/sync.log
+launchctl list | grep jobcan          # 登録されているかの確認
+tail -f ~/.jobcan-gcal-sync/sync.log  # 動作ログを見る
 ```
 
-## How the sync works
+## 同期の仕組み
 
-Each run crawls the current month plus the configured look-ahead, then reconciles
-that window:
+1 回の実行で、対象期間（今月と、設定した前後の月）のシフトを **1 回のリクエストでまとめて**
+取得し、その期間のカレンダーを Jobcan の内容に合わせます。
 
-| Jobcan | Calendar |
+| Jobcan 側 | カレンダー側 |
 | --- | --- |
-| new shift | event created |
-| shift time or name changed | existing event updated in place |
-| shift removed | the event we created is deleted |
-| unchanged | left alone (no API write) |
+| シフトが増えた | 予定を作成します |
+| 時刻やシフト名が変わった | 既存の予定をその場で更新します |
+| シフトが消えた | このアプリが作った予定を削除します |
+| 変化なし | 何もしません（API を呼びません）|
 
-Events are keyed by `date#ordinal`, so a shift that moves by an hour is *updated*
-rather than deleted and recreated — your reminders and any calendar-side
-notifications stay intact.
+予定は「日付 + その日の何番目か」で対応付けています。そのためシフトが 1 時間ずれた場合も、
+削除して作り直すのではなく**更新**されます。予定に設定した通知はそのまま残ります。
 
-Overnight shifts are handled: Jobcan's `22:00～26:00` becomes 22:00 → 02:00 the
-next day.
+夜勤にも対応しています。Jobcan の `22:00〜26:00` は、22:00 から**翌日**の 02:00 として
+登録されます。
 
-### The empty-scrape guard
+取得する期間と、カレンダーを書き換える期間は必ず一致します。ずれていると、取得できなかった
+日の予定が「Jobcan から削除された」と誤って判断されてしまうためです。
 
-If a scrape returns **zero** shifts, the calendar is left untouched and a warning
-is logged. A broken parser and a genuinely empty roster look identical from the
-outside, and only one of them should be allowed to wipe three months of events.
-If your roster really is empty and you want the events removed, tick
-*"Allow an empty scrape to delete synced events"*.
+### 1 件も取得できなかったときの保護
 
-## If no shifts are found
+シフトが **0 件**だった場合、カレンダーは変更せず、警告だけを記録します。
 
-Jobcan's markup differs between tenants. Press **Test Jobcan login & scrape** —
-it reports what it found per month and saves the raw HTML to
-`~/.jobcan-gcal-sync/debug/`.
+「読み取りに失敗した」場合と「本当にシフトが 1 件もない」場合は、外から見分けが付きません。
+前者で数か月分の予定を消してしまうと元に戻せないため、既定では何もしない側に倒しています。
 
-If the bundled parser can't read your tenant's layout, drop a custom parser at
-`~/.jobcan-gcal-sync/parser.mjs`; it is picked up automatically on the next run.
+本当に 0 件で、予定も消したい場合は
+「**Allow an empty scrape to delete synced events**」にチェックを入れてください。
+
+## シフトが取得できないとき
+
+Jobcan の画面構成は会社ごとに違います。まず「**Test Jobcan login & scrape**」を押してください。
+取得した期間と件数が表示され、受け取った HTML が `~/.jobcan-gcal-sync/debug/` に保存されます。
+
+付属の解析処理は、次の順に試して**いちばん多く読み取れた方法**を採用します。
+
+1. **見出しのある表**（`日付` / `出社予定` / `退社予定` / `シフト名` などの見出しを探し、
+   列の位置で読み取ります）。Jobcan の標準のシフト表はこの形式です。
+2. **1 つのセルに `09:00〜18:00` のように範囲が入っている表**。
+3. **カレンダー形式**（1 マスの中に日付と時刻が入っているもの）。
+
+「公休」「有給」などの行と、時刻欄が `-` の行は、勤務なしとして除外します。
+
+それでも読み取れない場合は、`~/.jobcan-gcal-sync/parser.mjs` に自作の解析処理を置いてください。
+次回の実行から自動的に使われます。
 
 ```js
 // ~/.jobcan-gcal-sync/parser.mjs
 export function parse(html, { year, month }) {
+  // year / month は取得期間の開始月です。
   return {
     shifts: [
       {
-        date: '2026-08-03',                        // YYYY-MM-DD
+        date: '2026-08-03',                        // YYYY-MM-DD 形式
         start: { hhmm: '09:00', dayOffset: 0 },
-        end:   { hhmm: '18:00', dayOffset: 0 },    // dayOffset 1 = ends next day
-        note:  '早番',                              // or null
+        end:   { hhmm: '18:00', dayOffset: 0 },    // dayOffset: 1 は翌日終わり
+        note:  '早番',                              // 無い場合は null
       },
     ],
   };
 }
 ```
 
-The bundled parser tries a list-style table first, then a month-grid calendar,
-and keeps whichever yields more rows. It reads the month from the page heading
-when present, so bare day numbers still resolve correctly.
+## 認証情報の保存場所
 
-## Where your credentials live
+すべて `~/.jobcan-gcal-sync/`（パーミッション `0700`）の中にあります。
 
-Everything is under `~/.jobcan-gcal-sync/` (mode `0700`):
-
-| File | Contents |
+| ファイル | 内容 |
 | --- | --- |
-| `config.enc` | AES-256-GCM encrypted config: Jobcan password, Google client secret, refresh token |
-| `key` | The encryption key, mode `0600` |
-| `sync.log` | Activity log |
-| `debug/` | Saved HTML from failed or empty scrapes |
+| `config.enc` | AES-256-GCM で暗号化した設定。Jobcan のパスワード、Google のクライアントシークレット、リフレッシュトークンを含みます |
+| `key` | 暗号化に使う鍵（パーミッション `0600`）|
+| `sync.log` | 動作ログ |
+| `debug/` | 取得に失敗した、または 0 件だったときの HTML |
 
-**Be clear about what that encryption does.** It stops your password showing up in
-plain text in a backup, a Time Machine snapshot, or an accidental screen share.
-It does *not* protect against someone who already has access to your user
-account — the key sits next to the file, and it has to, because the daemon must
-start unattended. Treat this as "not lying around in plaintext", not as a vault.
+**この暗号化で防げること・防げないこと。**
+バックアップや Time Machine の保存データ、うっかり共有した画面などに、パスワードが
+そのまま文字として現れることは防げます。一方で、**あなたのユーザーアカウントに入れる人に
+対しては無力です。** 鍵が同じ場所に置いてあるためで、これは常駐プログラムが人手を介さずに
+起動する以上、避けられません。「平文で放置しない」程度のもの、と考えてください。
 
-The web UI never receives your secrets back: it is only told *whether* each one is
-set. The server binds to `127.0.0.1` only and rejects any request whose `Host`
-header isn't loopback, which blocks DNS-rebinding attacks from a web page you
-happen to have open.
+ブラウザの画面側に秘密情報が戻ることはありません。「設定済みかどうか」だけが渡されます。
+サーバーは `127.0.0.1` だけで待ち受け、`Host` ヘッダーがループバック以外のリクエストは
+拒否します。これは、たまたま開いている別のウェブページからの
+DNS リバインディング攻撃を防ぐためです。
 
-Debug HTML dumps are pages from inside your logged-in Jobcan session. Look before
-you share one.
+`debug/` に保存される HTML は、ログイン済みの Jobcan の画面そのものです。
+**他の人に渡す前に、必ず中身を確認してください。**
 
-## Two things to know before you rely on it
+## 使う前に知っておいてほしいこと
 
-- **2FA and SSO aren't supported.** The login posts email, password and client
-  code to the standard form. If your account requires a second factor or a
-  corporate SSO redirect, the login will fail and the test button will say so.
-- **Scraping is brittle by nature.** The API is unavailable, so this reads HTML.
-  If Jobcan redesigns the shift page, syncing stops and the empty-scrape guard
-  keeps your calendar intact until you fix the parser.
+- **二要素認証と SSO には対応していません。**
+  メールアドレス・パスワード・クライアントコードを通常のフォームに送るだけの仕組みです。
+  二要素認証や会社の SSO が必要なアカウントではログインに失敗し、
+  テストボタンがその理由を表示します。
+- **HTML の読み取りは、そもそも壊れやすい方法です。**
+  API が使えないため、画面の HTML を読んでいます。Jobcan がシフト画面の作りを変えると
+  同期は止まります。その場合も上の「1 件も取得できなかったときの保護」が働くので、
+  解析処理を直すまでカレンダーの中身は保たれます。
 
-## Configuration reference
+## 設定項目
 
-| Setting | Default | Notes |
+| 設定 | 既定値 | 説明 |
 | --- | --- | --- |
-| Client code | *(blank)* | Posted as `user[client_code]`; leave blank if your sign-in page does not ask for one |
-| Shift page URL | `https://ssl.jobcan.jp/employee/shift-schedule` | `year`/`month` params are appended per month |
-| Months back / ahead | 0 / 2 | Also defines the reconciliation window |
-| Interval | 30 min | Floor of 5 min |
-| Event title | `Shift{{#note}} ({{note}}){{/note}}` | `{{note}}` `{{date}}` `{{start}}` `{{end}}` |
-| Calendar name | `Jobcan Shifts` | The app creates and owns this calendar; renaming it here renames it in Google |
-| Time zone | `Asia/Tokyo` | |
+| クライアントコード | *(空)* | `user[client_code]` として送信します。ログイン画面で聞かれない場合は空のままで構いません |
+| シフト画面の URL | `https://ssl.jobcan.jp/employee/shift-schedule` | 期間の指定（`search_type=term` と開始日・終了日）は自動で付きます |
+| 何か月前 / 何か月先 | 0 / 2 | 取得する範囲です。カレンダーを書き換える範囲も同じになります |
+| 実行間隔 | 30 分 | 最短 5 分 |
+| 予定のタイトル | `Shift{{#note}} ({{note}}){{/note}}` | `{{note}}` `{{date}}` `{{start}}` `{{end}}` が使えます |
+| カレンダー名 | `Jobcan Shifts` | このアプリが作成して管理します。ここで変更すると Google 側の名前も変わります |
+| タイムゾーン | `Asia/Tokyo` | |
 
-Environment overrides: `JOBCAN_SYNC_PORT`, `JOBCAN_SYNC_DATA_DIR`.
+環境変数で上書きできる項目: `JOBCAN_SYNC_PORT`、`JOBCAN_SYNC_DATA_DIR`
 
-## Tests
+## テスト
 
 ```bash
 npm test
 ```
 
-Covers the shift parser, event building, the sync window, the cookie jar, and the
-full login-and-scrape flow against a mocked Jobcan.
+シフト表の解析、予定の組み立て、同期範囲の計算、Cookie の扱い、そして Jobcan を模擬した
+サーバーに対する「ログインから取得まで」の一連の流れを確認します。

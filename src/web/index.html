@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jobcan → Google Calendar Sync</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Jobcan → Google Calendar</h1>
+      <p class="sub">One-way sync. Nothing is ever written back to Jobcan.</p>
+    </header>
+
+    <main>
+      <section class="card status-card">
+        <div class="status-row">
+          <div>
+            <span id="statusDot" class="dot"></span>
+            <strong id="statusText">Loading…</strong>
+            <div class="muted" id="statusDetail"></div>
+          </div>
+          <div class="actions">
+            <button id="startBtn" class="primary">Start Syncing</button>
+            <button id="stopBtn" class="ghost hidden">Stop Syncing</button>
+            <button id="syncNowBtn" class="ghost">Sync now</button>
+          </div>
+        </div>
+        <div id="lastResult" class="muted"></div>
+      </section>
+
+      <section class="card">
+        <h2>1 · Jobcan account</h2>
+        <label>
+          Email
+          <input id="jobcanEmail" type="text" autocomplete="off" />
+        </label>
+        <label>
+          Client code
+          <input id="jobcanClientCode" type="text" autocomplete="off" />
+          <small class="muted">Your company's Jobcan client code. Leave blank if your sign-in page does not ask for one.</small>
+        </label>
+        <label>
+          Password
+          <input id="jobcanPassword" type="password" autocomplete="off" placeholder="" />
+          <small id="passwordHint" class="muted"></small>
+        </label>
+        <label>
+          Shift page URL
+          <input id="shiftUrl" type="url" />
+          <small class="muted"
+            >The page that lists your own shifts. <code>year</code> and <code>month</code> are added
+            automatically.</small
+          >
+        </label>
+        <div class="two-col">
+          <label>
+            Months back
+            <input id="monthsBehind" type="number" min="0" max="6" />
+          </label>
+          <label>
+            Months ahead
+            <input id="monthsAhead" type="number" min="0" max="12" />
+          </label>
+        </div>
+        <button id="testJobcanBtn" class="ghost">Test Jobcan login &amp; scrape</button>
+        <pre id="jobcanResult" class="result hidden"></pre>
+      </section>
+
+      <section class="card">
+        <h2>2 · Google Calendar</h2>
+        <label>
+          Calendar name
+          <input id="calendarName" type="text" />
+          <small class="muted">
+            The app creates and owns this calendar and writes shifts only there. It never gets
+            access to your existing calendars.
+          </small>
+          <small id="calendarIdHint" class="muted"></small>
+        </label>
+        <p class="muted">
+          Create an OAuth client in Google Cloud Console (type <strong>Desktop app</strong>), then
+          download its JSON and paste it below. Set the consent screen's publishing status to
+          <strong>In production</strong> — in “Testing” Google expires the token every 7 days and
+          syncing silently stops.
+        </p>
+        <label>
+          Paste <code>client_secret_….json</code>
+          <textarea id="googleCredentialsJson" rows="3" autocomplete="off"
+            placeholder='{"installed":{"client_id":"…","client_secret":"…"}}'></textarea>
+          <small class="muted">Fills both fields below. Or enter them by hand.</small>
+          <small id="jsonHint" class="muted"></small>
+        </label>
+        <details>
+          <summary class="muted">Enter client ID and secret manually</summary>
+          <label>
+            Client ID
+            <input id="googleClientId" type="text" autocomplete="off" />
+          </label>
+          <label>
+            Client secret
+            <input id="googleClientSecret" type="password" autocomplete="off" />
+            <small id="secretHint" class="muted"></small>
+          </label>
+          <small class="muted">Web-app clients need redirect URI <code id="redirectUri"></code></small>
+        </details>
+        <div class="row">
+          <button id="connectGoogleBtn" class="ghost">Connect Google Calendar</button>
+          <span id="googleStatus" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>3 · Sync options</h2>
+        <div class="two-col">
+          <label>
+            Interval (minutes)
+            <input id="intervalMinutes" type="number" min="5" max="1440" />
+          </label>
+          <label>
+            Time zone
+            <input id="timezone" type="text" />
+          </label>
+        </div>
+        <label>
+          Event title template
+          <input id="eventTitleTemplate" type="text" />
+          <small class="muted"
+            >Placeholders: <code>{{note}}</code> <code>{{date}}</code> <code>{{start}}</code>
+            <code>{{end}}</code>. Wrap optional text in <code>{{#note}}…{{/note}}</code>.</small
+          >
+        </label>
+        <label>
+          Reminder (minutes before, blank = calendar default)
+          <input id="reminderMinutes" type="number" min="0" max="40320" />
+        </label>
+        <label class="checkbox">
+          <input id="allowEmptyPurge" type="checkbox" />
+          <span
+            >Allow an empty scrape to delete synced events
+            <small class="muted">Off by default — protects against a broken parser wiping your calendar.</small></span
+          >
+        </label>
+        <button id="saveBtn" class="primary">Save settings</button>
+        <span id="saveStatus" class="muted"></span>
+      </section>
+
+      <section class="card">
+        <h2>Activity log</h2>
+        <pre id="logs" class="result"></pre>
+        <p class="muted">Full log: <code id="logFile"></code></p>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

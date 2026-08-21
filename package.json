@@ -1,0 +1,20 @@
+{
+  "name": "jobcan-gcal-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One-way sync: Jobcan shifts -> Google Calendar. Runs locally in the background.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "install-service": "bash bin/install-service.sh",
+    "uninstall-service": "bash bin/uninstall-service.sh",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}

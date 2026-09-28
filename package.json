@@ -12,7 +12,7 @@
     "start": "node src/index.js",
     "install-service": "bash bin/install-service.sh",
     "uninstall-service": "bash bin/uninstall-service.sh",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "cheerio": "^1.0.0"
